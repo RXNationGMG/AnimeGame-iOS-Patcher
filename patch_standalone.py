@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Always-private build (no menu in game).
 
     python patch_standalone.py <decrypted.ipa> [output.ipa] [options]

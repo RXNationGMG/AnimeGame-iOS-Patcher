@@ -1,29 +1,3 @@
-#!/usr/bin/env python3
-"""gipatch - version independent RSA-key patcher for Genshin Impact (iOS).
-
-The game builds its RSA key strings as XML text with movz/movk immediates and
-stores them into a stack/heap buffer, seven times (one per protocol path).  No
-copy of the key exists in the file, so the only way to change it is to change
-what the code writes.
-
-Everything that used to be a hard-coded offset is discovered here:
-
-  * `find_key_builds`      - scans the whole binary for immediate runs that
-                             assemble into "<RSAKeyValue>...</RSAKeyValue>"
-  * `text_free_runs`       - zero padding in __TEXT (outside every section)
-  * `writable_zero_gap`    - unused zero-filled tail of a writable segment
-  * `ObjC.method`          - ObjC2 metadata walk to `startUnity:` / `showGameUI`
-  * `MachO.binds`          - dyld bind opcodes -> GOT slots for the runtime
-  * `selrefs`              - __objc_selrefs -> selector slot addresses
-
-Two patch shapes are provided:
-
-  patch_standalone(main, key)      rewrite the key immediates in place
-                                   (no extra code, no runtime switch)
-  patch_toggle(main, key, report)  replace every key build with a stub that
-                                   copies from a runtime-selected blob, add the
-                                   pre-game panel, hook startUnity:
-"""
 import json
 import os
 import plistlib

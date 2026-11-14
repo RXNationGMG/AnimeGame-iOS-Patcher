@@ -1,21 +1,3 @@
-#!/usr/bin/env python3
-"""Position-dependent AArch64 server panel for the RSA-key patcher.
-
-Everything version specific (code base, GOT slots, selector refs, scratch
-page) is passed in through `p`, so the same generator works for any Genshin
-version whose method list, selrefs and bindings were found by `gipatch.py`.
-
-Panel semantics
----------------
-* runs from the `startUnity:` hook, i.e. before `UnityInitApplication`, so it
-  is the first thing the user sees and cannot be covered by Unity;
-* blocks the main thread in 0.1 s run-loop slices until a button is tapped
-  (60 s failsafe -> hide and continue);
-* tapping the already-active choice hides the panel and boots normally;
-* tapping the other choice persists `rsapatch.mode`, synchronises the
-  defaults and `exit(0)`s, so the next launch applies that key in
-  `apply_mode` before Unity builds any of the RSA key strings.
-"""
 import struct
 
 try:

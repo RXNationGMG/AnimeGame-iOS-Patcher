@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Shared patch pipeline.
 
 `rsa_patch.py` (the friendly front-end) and the two command line scripts all

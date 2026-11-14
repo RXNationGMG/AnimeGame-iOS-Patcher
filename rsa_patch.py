@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Genshin Impact iOS - RSA Patcher (friendly front-end).
 
 Double-click START_HERE.bat on Windows (or run `python rsa_patch.py`) and

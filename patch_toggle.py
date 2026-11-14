@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Toggle build: choose the key from a panel before the game starts.
 
     python patch_toggle.py <decrypted.ipa> [output.ipa] [options]
