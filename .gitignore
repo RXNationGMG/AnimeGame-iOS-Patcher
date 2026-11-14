@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Game files - never commit these (copyright, and they are huge)
+builds/*
+!builds/README.md
+!builds/SHA256SUMS.txt
+*.ipa
+*.ipk
+*.zip
+
+# Local junk
+*.log
+dist/
+.DS_Store
+Thumbs.db
