@@ -1,29 +1,25 @@
-# Prebuilt IPAs (not part of the git repository)
+# Builds
 
-These files are **ignored by git** on purpose: game binaries are copyrighted
-and far too large for a repository. They are kept here so the build that was
-tested on device can be reinstalled without re-running the patcher.
+This folder is where the patcher writes prebuilt IPAs, but **no game files are
+shipped here**: they are copyrighted, huge, and ignored by git.
 
-| File | What it is |
-|---|---|
-| `com.miHoYo.GenshinImpact_7.1.0_und3fined_RSApatch_standalone.ipa` | Always-private build produced by this toolkit (7.1.0). |
-| `com.miHoYo.GenshinImpact_7.1.0_und3fined_RSApatch_toggle.ipa` | Panel build produced by this toolkit (7.1.0), current strings. |
-| `GenshinImpact_7.1.0_Toggle_v8.ipa` | Device-confirmed panel build kept as a fallback. |
-
-Install with KSign (or Sideloadly): the bundled `ldid` signature is only a
-placeholder, KSign re-signs the IPA with your certificate.
-
-`SHA256SUMS.txt` lets you confirm a copy is intact:
+Build your own from a decrypted IPA:
 
 ```bash
-sha256sum -c SHA256SUMS.txt
-# Windows
-certutil -hashfile <file> SHA256
+python rsa_patch.py <decrypted.ipa> --mode 1   # always private
+python rsa_patch.py <decrypted.ipa> --mode 2   # pre-game panel
 ```
 
-To rebuild any of them from your own decrypted IPA:
+With the default settings the output lands next to the input IPA. Pass `-o
+builds/<name>.ipa` (or use the CLI wrappers) if you want it in this folder.
+
+Install the result with KSign or Sideloadly; the bundled `ldid` signature is
+only a placeholder.
+
+After building, check the file is intact:
 
 ```bash
-python rsa_patch.py <decrypted.ipa> --mode 1   # standalone
-python rsa_patch.py <decrypted.ipa> --mode 2   # toggle
+sha256sum <file>
+# Windows
+certutil -hashfile <file> SHA256
 ```
