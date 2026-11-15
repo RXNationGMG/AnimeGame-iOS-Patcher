@@ -85,16 +85,50 @@ register the stub clobbers is one the original run did not need afterwards.
 
 **Panel.** `panel.py` assembles a small Objective-C panel with Keystone in free
 `__TEXT` padding (`_space_for`), and `_load_panel` resolves the GOT slots the
-code calls through: `objc_msgSend`, `objc_getClass`, `dlsym` and
-`__NSConcreteGlobalBlock`. Selectors are loaded from `__objc_selrefs` instead
-of from string literals, so no `__cstring` space is needed. Every short name
-goes through the exact-match `SEL_ALIASES` table: Unity itself has selectors
-called `action` and `present`, so a name that is merely present in the binary
-would pick the wrong slot and crash with `unrecognized selector`.
+code calls through: `objc_msgSend`, `objc_getClass` and `dlsym`. Selectors are
+loaded from `__objc_selrefs` instead of from string literals, so no `__cstring`
+space is needed. Every short name goes through the exact-match `SEL_ALIASES`
+table: Unity itself has selectors called `action` and `present`, so a name that
+is merely present in the binary would pick the wrong slot and crash with
+`unrecognized selector`.
 
-The panel shows a `UIAlertController` with the two choices, blocks in short
-run-loop slices until a button is pressed, and falls back to the stored mode
-after 60 seconds so a missed tap cannot hang the app.
+The panel is a custom horizontal picker: a `UILabel` title, a `UILabel` message
+and two `UIButton`s side by side, laid out from the displayed size
+(margin 24, gap 12, button height 56). `UIAlertController` is deliberately not
+used because its actions are always stacked vertically. Button titles are set on
+`button.titleLabel` with `adjustsFontSizeToFitWidth`, so
+"Grasscutter (private)" stays on one line on narrow phones.
+
+The size is decided in one place, `relayout()`. It takes the two side lengths
+from `[UIScreen mainScreen] -bounds`, asks the panel window's scene for
+`interfaceOrientation` and picks width = long side when the interface is
+landscape (3/4) or short side when it is portrait (1/2), pins the panel window to
+`{0, 0, width, height}` and then re-frames the labels and buttons. Measuring
+`-window.bounds` instead is wrong: a window created with
+`initWithWindowScene:` keeps the scene's coordinate space, which can still be
+the launch orientation (844x390) while the glass shows 390x844, so the panel
+laid out 844 pt wide and the right-hand button ran off the edge. The wait loop
+probes the size every tick and calls `relayout()` again if it moved by more than
+0.5 pt, so a rotation while the panel is up is followed instead of leaving the
+row half off-screen.
+
+Rounded corners go through the button's **layer**, never the button:
+`setCornerRadius:` is a `CALayer` method, and its receiver must stay in one
+register until the send. `setMasksToBounds:` is not used at all — a rounded
+layer background does not need it, and sending it to a `UIButton` (or to a
+`UILabel` that reused the register) raises `unrecognized selector` and kills the
+app before the first frame.
+
+`UIButton` target-action needs a `SEL`, and these methods do not exist in the
+game, so the panel calls `sel_registerName("rsaPatchPickPrivate:" / "…Official:")`
+and installs the two IMPs (`pick_private`, `pick_official`) on
+`UIViewController` with `class_addMethod`. That avoids blocks
+(`__NSConcreteGlobalBlock`) and `UIAction`, which requires iOS 14 while this
+build's minimum is iOS 13. The buttons are wired with
+`addTarget:action:forControlEvents:` (`UIControlEventTouchUpInside` = 64).
+
+The panel blocks in short run-loop slices until a button is pressed, and falls
+back to the stored mode after 60 seconds so a missed tap cannot hang the app.
 
 **Hook.** `gipatch.ObjC` walks `__objc_classlist` → class → method list →
 `startUnity:` entry, checks that the IMP field is rebased by dyld (it is), and
@@ -108,7 +142,22 @@ built.
 
 ---
 
-## 5. Verification
+## 5. Bundle identifier
+
+Both builds retag the main app so it can coexist with the official client. The
+default is `com.yuuki.gios`; `--bundle-id ""` keeps whatever the source IPA
+shipped with. Only `Payload/<app>.app/Info.plist` is rewritten — embedded
+bundles and frameworks keep their own identifiers.
+
+`gipatch.rewrite_bundle_id` loads the plist with `plistlib`, sets
+`CFBundleIdentifier`, and writes it back in the same format it was read in
+(XML or binary). The replacement bytes go through the same `repack` /
+`verify_repack` path as the main binary, so the archive entry list and order
+stay untouched and the written plist is compared byte for byte.
+
+---
+
+## 6. Verification
 
 Before anything is written:
 
@@ -123,7 +172,8 @@ Before anything is written:
 After writing:
 
 * archive entry list and order are compared with the source IPA;
-* every other entry's CRC and size must be unchanged;
+* every untouched entry's CRC and size must be unchanged;
+* the rewritten `Info.plist` must contain the requested bundle identifier;
 * the written main binary must equal the patched bytes and the zip CRCs must be
   valid;
 * the written IPA is re-read: the hook, panel bytes, both key blobs and every
@@ -133,7 +183,7 @@ If any check fails the output file is deleted.
 
 ---
 
-## 6. Failure modes it refuses
+## 7. Failure modes it refuses
 
 | Condition | Why |
 |---|---|
@@ -142,7 +192,7 @@ If any check fails the output file is deleted.
 | `cryptid != 0` | encrypted text cannot be disassembled meaningfully |
 | no free `__TEXT` space | the panel code would overwrite live code |
 | missing selectors | the panel would call a selector the app never registers |
-| panel loads a lookalike selector (`action`, `present`) | those exist in Unity but are not the `UIAlertAction` / `UIViewController` methods, so the alert would crash with `unrecognized selector` |
+| panel loads a lookalike selector (`action`, `present`) | those exist in Unity but are not the UIKit methods the panel calls, so it would crash with `unrecognized selector` |
 | panel state is not addressed from the scratch block | an unaligned scratch base without the matching `add` writes over live `__DATA` |
 
 Each of these raises a message explaining what happened instead of producing an
@@ -150,7 +200,7 @@ IPA that crashes on device.
 
 ---
 
-## 7. Signing
+## 8. Signing
 `ldid -S` replaces the shipped (App Store) code signature of the main binary
 with an ad-hoc one so dyld accepts the modified binary; KSign/Sideloadly then
 re-sign the whole IPA with a real certificate. This is why the main binary
@@ -164,7 +214,11 @@ KSign replaces the signature anyway.
 
 ---
 
-## 8. Archive packaging
+## 9. Archive packaging
+
+Repacking copies every entry in its original order. The patched main binary and
+(when the bundle identifier is changed) the main app's `Info.plist` are the only
+entries whose bytes differ.
 
 Two things are normalised while repacking so that on-device signing tools
 accept the result:
@@ -180,7 +234,7 @@ accept the result:
   fields), so the archive looks exactly like a store-issued IPA. If a future
   archive really needed ZIP64 the function refuses instead of corrupting it.
 
-## 9. Performance
+## 10. Performance
 
 Patching itself takes about 40 seconds on a 3.2 GB IPA. Repacking dominates:
 every entry is recompressed, roughly 5 minutes for 842 entries on a modern SSD.

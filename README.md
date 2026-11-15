@@ -66,23 +66,48 @@ python rsa_patch.py game.ipa --mode 1 -y      # always private, no questions
 | Build | Behaviour |
 |---|---|
 | **Standalone** (`--mode 1`) | Always uses the private key. No menu, no extra code — the key immediates in the binary are rewritten in place. |
-| **Toggle** (`--mode 2`) | Shows a small panel before Unity starts: **Grasscutter (private)** or **HoYoverse (official)**. Switching restarts the app. |
+| **Toggle** (`--mode 2`) | Shows a small panel before Unity starts: **Grasscutter (private)** or **HoYoverse (official)** side by side. Switching restarts the app. |
 
 The toggle panel is presented from `-[UnityAppController startUnity:]`, i.e.
 before the engine draws anything, so it cannot be skipped or covered by the
 game:
 
 ```
-RSA Patch Selection
+        RSA Patch Selection
 Choose your RSA Patch. Switching requires you to restart the app.
 
-  Grasscutter (private)
-  HoYoverse (official)
+  ┌────────────────────┐  ┌────────────────────┐
+  │ Grasscutter        │  │ HoYoverse          │
+  │ (private)          │  │ (official)         │
+  └────────────────────┘  └────────────────────┘
 ```
+
+The two buttons share one row (a custom `UIButton` pair, not a vertical
+`UIAlertController`), so the panel stays compact on every iPhone and iPad. The
+panel measures the screen and the current interface orientation, and re-lays
+out if either changes, so it fits whether the phone is held portrait or
+landscape when the app starts.
 
 The choice is stored in `NSUserDefaults` as `rsapatch.mode` (`1` = private,
 `2` = official). The official choice uses the key the installed build shipped
 with, read from the binary itself — nothing is hard-coded.
+
+### Bundle identifier
+
+By default the patched app is retagged to **`com.yuuki.gios`**, so it can be
+installed next to the official client without replacing it. Only the main
+`Payload/GenshinImpact.app/Info.plist` is rewritten; embedded frameworks and
+bundles keep their own identifiers.
+
+> **Heads-up:** a different identifier means a fresh iOS app container. The
+> game will not see data from an install that used another bundle ID, so it
+> downloads its resources again on first launch. Pass `--bundle-id ""` if you
+> want to keep the original container and data.
+
+```bash
+python rsa_patch.py game.ipa --mode 2 --bundle-id com.example.mygenshin
+python rsa_patch.py game.ipa --mode 2 --bundle-id ""   # keep the original
+```
 
 ---
 
@@ -108,6 +133,7 @@ fine. Without `--key-file` the built-in Grasscutter / YuukiPS key is used.
 | `-o`, `--output PATH` | where to write the patched IPA |
 | `-y`, `--yes` | never ask, use the given/default answers |
 | `--key-file FILE` | install another server's `<RSAKeyValue>` |
+| `--bundle-id ID` | CFBundleIdentifier for the patched app (default `com.yuuki.gios`; `""` keeps the original) |
 | `--report-only` | analyse and print the discovered sites, write nothing |
 | `--no-sign` | skip the included `ldid` step (KSign will sign anyway) |
 | `--ldid PATH` | use a specific `ldid` binary |
@@ -135,9 +161,11 @@ Default names, written next to the input:
 <name>_RSApatch_toggle.ipa
 ```
 
-Only the app's main executable is replaced. Every other archive entry is copied
-through byte for byte with the original entry order, and the result is verified:
-entry list, CRCs, and the patched bytes are re-read from the written IPA.
+Only the app's main executable is patched, and (when `--bundle-id` is not
+empty) the main app's `Info.plist` is retagged. Every other archive entry is
+copied through byte for byte with the original entry order, and the result is
+verified: entry list, CRCs, the rewritten plist and the patched bytes are
+re-read from the written IPA.
 
 Two packaging tweaks are applied on purpose, because some on-device signing
 tools refuse the raw archives they come from:
@@ -186,8 +214,8 @@ the binary for those immediate runs, classifies each as public or private, then:
   at the panel hook.
 
 Everything else — free code space, scratch memory, the ObjC method list, the
-GOT slots for `objc_msgSend` / `objc_getClass` / `dlsym` /
-`__NSConcreteGlobalBlock`, and the selector refs — is discovered per binary.
+GOT slots for `objc_msgSend` / `objc_getClass` / `dlsym`, and the selector
+refs — is discovered per binary.
 
 Details: [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md).
 
@@ -197,8 +225,8 @@ Details: [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md).
 
 | Version | Status |
 |---|---|
-| 7.1.0 (1242) | Full build; both modes device-confirmed. |
-| 7.2.0 | Full build; both modes device-confirmed. |
+| 7.1.0 (1242) | Full build; both modes device-confirmed (1.1.0). |
+| 7.2.0 | Full build; both modes device-confirmed (1.2.0, `com.yuuki.gios`). |
 
 The scripts refuse binaries using **chained fixups**
 (`LC_DYLD_CHAINED_FIXUPS`) or relative ObjC method lists. All 7.x builds use the

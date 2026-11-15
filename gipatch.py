@@ -878,6 +878,8 @@ class Ipa:
         self.path = path
         self.zf = zipfile.ZipFile(path)
         self.main_entry, self.app_dir, self.info = self._find_main()
+        self.info_entry = self.app_dir + "/Info.plist"
+        self.info_raw = self.zf.read(self.info_entry)
         self.version = self.info.get("CFBundleShortVersionString") or "?"
         self.build = self.info.get("CFBundleVersion") or "?"
 
@@ -901,6 +903,23 @@ class Ipa:
 
     def close(self):
         self.zf.close()
+
+
+def rewrite_bundle_id(raw, bundle_id):
+    """Return Info.plist bytes with CFBundleIdentifier set to `bundle_id`.
+
+    The original format (XML or binary plist) is preserved and an empty
+    `bundle_id` leaves the bytes untouched.  Only the main app's Info.plist
+    should ever be passed here; embedded bundles keep their own identifiers.
+    """
+    if not bundle_id:
+        return raw
+    fmt = plistlib.FMT_BINARY if raw[:8] == b"bplist00" else plistlib.FMT_XML
+    info = plistlib.loads(raw)
+    if info.get("CFBundleIdentifier") == bundle_id:
+        return raw
+    info["CFBundleIdentifier"] = bundle_id
+    return plistlib.dumps(info, fmt=fmt)
 
 
 def ldid_path(explicit=None):
@@ -952,14 +971,18 @@ def adhoc_sign(blob, ldid=None, ident="GenshinImpact"):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def repack(src, dst, main_entry, main_blob, progress=True, skip=None):
+def repack(src, dst, main_entry, main_blob, progress=True, skip=None,
+           replace=None):
     """Rewrite the IPA with the patched main binary.
 
     `skip(name)` may drop packaging-only entries (Apple zip metadata, the
-    decrypt.day marker).  Entry order is otherwise preserved exactly.
+    decrypt.day marker).  `replace` maps entry names to new bytes (used for
+    the main app's Info.plist when the bundle identifier changes).  Entry
+    order is otherwise preserved exactly.
     """
     t0 = time.time()
     dropped = []
+    replace = replace or {}
     with zipfile.ZipFile(src) as zin:
         infos = zin.infolist()
         with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED,
@@ -979,6 +1002,8 @@ def repack(src, dst, main_entry, main_blob, progress=True, skip=None):
                     zi.file_size = len(main_blob)
                     zout.writestr(zi, main_blob)
                     replaced = True
+                elif info.filename in replace:
+                    zout.writestr(zi, replace[info.filename])
                 elif info.is_dir():
                     zout.writestr(zi, b"")
                 else:
@@ -994,8 +1019,9 @@ def repack(src, dst, main_entry, main_blob, progress=True, skip=None):
     return time.time() - t0
 
 
-def verify_repack(src, dst, main_entry, main_blob, skip=None):
+def verify_repack(src, dst, main_entry, main_blob, skip=None, replace=None):
     ok = True
+    replace = replace or {}
     with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst) as b:
         expect = [n for n in a.namelist() if not (skip and skip(n))]
         if expect != b.namelist():
@@ -1008,6 +1034,11 @@ def verify_repack(src, dst, main_entry, main_blob, skip=None):
         bad = 0
         for name in b.namelist():
             if name == main_entry:
+                continue
+            if name in replace:
+                if b.read(name) != replace[name]:
+                    print("  !! %s was not rewritten" % name)
+                    bad += 1
                 continue
             if (ea[name].CRC, ea[name].file_size) != (eb[name].CRC, eb[name].file_size):
                 print("  !! %s changed" % name)
@@ -1204,11 +1235,6 @@ def plan(m, key_text, want_toggle, official_texts=None):
         "msgsend": _pick_import(imports, ["_objc_msgSend"], "objc_msgSend"),
         "getclass": _pick_import(imports, ["_objc_getClass"], "objc_getClass"),
         "dlsym": _pick_import(imports, ["_dlsym"], "dlsym"),
-        "globalblock": _pick_import(
-            imports,
-            ["__NSConcreteGlobalBlock", "___NSConcreteGlobalBlock",
-             "_NSConcreteGlobalBlock"],
-            "__NSConcreteGlobalBlock"),
     }
     p["sel"] = selrefs(m)
     p["scratch"] = writable_zero_gap(m, 0x100)
@@ -1222,10 +1248,18 @@ def _load_panel(plan, code_base):
             "setIntegerForKey", "synchronize", "alloc", "init", "initWithFrame",
             "initWithWindowScene", "mainScreen", "connectedScenes", "anyObject",
             "sharedApplication", "bounds", "setWindowLevel",
-            "setRootViewController", "makeKeyAndVisible", "setHidden", "present",
-            "alert", "action", "addAction", "date", "timeIntervalSinceReferenceDate",
+            "windowScene", "interfaceOrientation",
+            "setRootViewController", "makeKeyAndVisible", "setHidden",
+            "date", "timeIntervalSinceReferenceDate",
             "dateWithTimeIntervalSinceNow", "currentRunLoop",
-            "runMode:beforeDate:")
+            "runMode:beforeDate:",
+            "buttonWithType", "setFrame", "setTitle", "setTitleColor",
+            "addTarget", "setText", "setTextColor", "setFont", "titleLabel",
+            "setAdjustsFontSizeToFitWidth",
+            "setNumberOfLines", "setTextAlignment", "systemFontOfSize",
+            "boldSystemFontOfSize", "colorWithWhite", "whiteColor",
+            "addSubview", "view", "setBackgroundColor", "layer",
+            "setCornerRadius")
     missing = [k for k in keys if resolve_sel(plan["sel"], k) is None]
     if missing:
         raise PatchError("selectors missing from __objc_selrefs: %s"
@@ -1237,7 +1271,6 @@ def _load_panel(plan, code_base):
         "got_msgsend": plan["got"]["msgsend"],
         "got_getclass": plan["got"]["getclass"],
         "got_dlsym": plan["got"]["dlsym"],
-        "got_globalblock": plan["got"]["globalblock"],
         "sel": plan["sel"],
     }
     return build_panel(cfg)
@@ -1313,9 +1346,8 @@ def _guard_panel(panel, sel, scratch):
     Two invariants, both learned from device crashes:
 
     * Selectors must come from the exact `__objc_selrefs` slot.  Unity also has
-      selectors called `action` and `present`, and calling those instead of
-      `actionWithTitle:style:handler:` / `presentViewController:animated:
-      completion:` dies with `unrecognized selector`.
+      selectors called `action` and `present`; calling those instead of the
+      exact UIKit method dies with `unrecognized selector`.
     * Panel state and the key stubs must address the same scratch block.  The
       panel only emits `adrp x22, page`, so an unaligned block needs the
       matching `add x22, x22, #low`.

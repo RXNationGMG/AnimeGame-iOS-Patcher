@@ -27,6 +27,11 @@ import gipatch as G                                          # noqa: E402
 MODES = ("standalone", "toggle")
 SUFFIX = {"standalone": "_RSApatch_standalone", "toggle": "_RSApatch_toggle"}
 
+# The app is retagged so it can be installed beside the official client (and
+# so a private-server install does not collide with an App Store one).  Pass an
+# empty --bundle-id to keep the original identifier.
+DEFAULT_BUNDLE_ID = "com.yuuki.gios"
+
 DESCRIPTION = {
     "standalone": "always use the private server key (no menu in game)",
     "toggle": "choose private or official from a pre-game panel",
@@ -100,12 +105,16 @@ def free_space(path):
 # the pipeline
 # ---------------------------------------------------------------------------
 def run(mode, src, out=None, key_file=None, report_only=False, sign=True,
-        ldid=None, overwrite=False, verbose=False, echo=print):
+        ldid=None, overwrite=False, verbose=False, echo=print,
+        bundle_id=DEFAULT_BUNDLE_ID):
     """Patch one IPA.
 
     Returns a dict with `output`, `size`, `sha256`, `changed`, `seconds` and
     `report` (the patcher's own report).  Raises gipatch.PatchError on any
     explainable refusal, after removing a half-written output file.
+
+    `bundle_id` replaces CFBundleIdentifier in the main app's Info.plist;
+    `None` or "" leaves the identifier exactly as shipped.
     """
     if mode not in MODES:
         raise ValueError("mode must be one of %r" % (MODES,))
@@ -120,6 +129,9 @@ def run(mode, src, out=None, key_file=None, report_only=False, sign=True,
         echo("  app         : %s %s (%s)"
              % (ipa.app_name, ipa.version, ipa.build))
         echo("  main binary : %s" % ipa.main_entry)
+        echo("  bundle id   : %s" % (bundle_id or
+                                      "%s (unchanged)"
+                                      % ipa.info.get("CFBundleIdentifier")))
         echo("  key         : %s" % key_src)
 
         main = ipa.read_main()
@@ -188,11 +200,22 @@ def run(mode, src, out=None, key_file=None, report_only=False, sign=True,
         else:
             echo("  ad-hoc sign : skipped (--no-sign)")
 
+        replace = {}
+        if bundle_id:
+            try:
+                new_info = G.rewrite_bundle_id(ipa.info_raw, bundle_id)
+            except Exception as exc:
+                raise G.PatchError("cannot rewrite %s: %s"
+                                   % (ipa.info_entry, exc))
+            if new_info != ipa.info_raw:
+                replace[ipa.info_entry] = new_info
+                echo("  retagged    : CFBundleIdentifier -> %s" % bundle_id)
+
         echo("")
         echo("Packing ...")
         try:
             secs = G.repack(src, out, ipa.main_entry, patched,
-                            skip=packaging_noise)
+                            skip=packaging_noise, replace=replace)
         except BaseException:
             _discard(out)
             raise
@@ -204,7 +227,7 @@ def run(mode, src, out=None, key_file=None, report_only=False, sign=True,
         echo("Verifying ...")
         try:
             if not G.verify_repack(src, out, ipa.main_entry, patched,
-                                    skip=packaging_noise):
+                                   skip=packaging_noise, replace=replace):
                 raise G.PatchError("the repacked IPA did not verify")
             with zipfile.ZipFile(out) as z:
                 written = z.read(ipa.main_entry)
@@ -253,7 +276,7 @@ def run(mode, src, out=None, key_file=None, report_only=False, sign=True,
         echo("Done in %.1f s." % seconds)
         return {"output": out, "size": size, "sha256": sha256_file(out),
                 "changed": rep.get("changed_bytes", 0), "seconds": seconds,
-                "report": rep, "plan": plan}
+                "report": rep, "plan": plan, "bundle_id": bundle_id}
     finally:
         ipa.close()
 
@@ -279,6 +302,9 @@ def cli(mode, argv=None):
     ap.add_argument("output", nargs="?",
                     help="output IPA (default: <input>%s.ipa)" % SUFFIX[mode])
     ap.add_argument("--key-file", help="XML <RSAKeyValue> with the private key")
+    ap.add_argument("--bundle-id", default=DEFAULT_BUNDLE_ID,
+                    help="CFBundleIdentifier for the patched app "
+                         "(default: %(default)s; empty keeps the original)")
     ap.add_argument("--report-only", action="store_true",
                     help="analyse only, write nothing")
     ap.add_argument("--no-sign", action="store_true",
@@ -291,7 +317,8 @@ def cli(mode, argv=None):
     try:
         res = run(mode, args.input, args.output, args.key_file,
                   report_only=args.report_only, sign=not args.no_sign,
-                  ldid=args.ldid, overwrite=True, verbose=args.verbose)
+                  ldid=args.ldid, overwrite=True, verbose=args.verbose,
+                  bundle_id=args.bundle_id)
     except G.PatchError as exc:
         raise SystemExit(str(exc))
 

@@ -31,15 +31,47 @@
 | `output already exists` | the target file is there | delete/rename it, or pass `-o other.ipa` |
 | `repacked IPA did not verify` | the archive was modified while being read | close tools touching the IPA, retry |
 | Signing app says it cannot extract the IPA | the source archive carried `META-INF/` / `decrypt.day` metadata, or ZIP64 records | builds from this version drop those; if it still happens, check free space on the iPhone |
-| Installs, shows a white screen, then closes | the panel resolved a selector the app does not implement (typically `action` / `present`, which exist but are not `UIAlertAction`/`UIViewController` methods), or wrote its state outside the reserved scratch block | builds from this version resolve selectors through the exact alias table and use the scratch base; rebuild and reinstall |
+| Installs, shows a white screen, then closes | the panel sent a selector to an object that does not implement it. Known cases: `setMasksToBounds:` sent to a `UIButton` (it is a `CALayer` property; `UIView` uses `clipsToBounds`), that selector's receiver register being reused for the title label, and older builds resolving `action` / `present` to lookalike Unity selectors | builds from this version no longer send `masksToBounds` at all and resolve selectors through the exact alias table; rebuild and reinstall |
+| Installs with the new bundle ID, shows a white screen, then closes, while the original-ID build works | the retagged app starts with an empty container, and the game may bail out on its first launch | install the patched app, let it create its container, then reopen it; if it still closes, rebuild with `--bundle-id ""` to keep `com.miHoYo.GenshinImpact` |
+| Panel appears shifted right with the buttons cut off | the layout used `-window.bounds`, which follows the scene's launch coordinate space rather than the displayed orientation | builds from this version size the panel from the screen plus the scene's `interfaceOrientation` and re-lay out whenever the size changes; rebuild and reinstall |
 
 ### "Installs, then the app closes before the panel"
 
-A crash before the alert appears means the panel called `objc_msgSend` with a
-selector that exists in Unity but is not the method the panel wanted. The
-panel now maps short names through `SEL_ALIASES` and refuses to resolve `action`
-or `present` to those lookalike slots. If a future game version triggers this
-again, run `--report-only -v` and check the selector list it prints.
+A crash before the panel appears means the panel called `objc_msgSend` with a
+selector that exists in the binary but is not implemented by the receiver. The
+selector table only proves the *string* is somewhere in the app — `CALayer`
+methods are in there too — so the receiver class matters:
+
+* `setCornerRadius:` must go to the button's **layer**, not to the `UIButton`,
+  and the layer must stay in its register until the send. The panel does not use
+  `setMasksToBounds:` at all.
+* `action` and `present` exist in Unity but are not the UIKit methods the panel
+  wants, so short names go through `SEL_ALIASES` and are never guessed.
+
+The horizontal panel installs its two button methods
+(`rsaPatchPickPrivate:` / `rsaPatchPickOfficial:`) at runtime with
+`class_addMethod`, so it does not depend on `UIAction` or blocks. If a future
+game version triggers this again, run `--report-only -v` and check the selector
+list it prints.
+
+### "The app installs, but replaces the official Genshin"
+
+That is the bundle identifier: 1.2.0 retags the app to `com.yuuki.gios` by
+default, which is a *different* app ID from `com.miHoYo.GenshinImpact`. If your
+signing tool still installs over the official client, check that KSign used the
+new identifier and not the old one. Pass `--bundle-id ""` if you deliberately
+want the original identifier back.
+
+A new identifier also means a **new app container**: iOS will not reuse data
+from a build installed under another bundle ID, so the game downloads its
+resources again. That is normal and not a patch failure.
+
+### "The panel is sideways / buttons overlap"
+
+The 1.2.0 panel is a single row of two buttons sized from the window's
+`-bounds`. Rebuild with the current scripts; older prebuilt IPAs still carry the
+vertical alert. If a future iOS changes button metrics, the panel is still
+readable but the titles shrink; report the version and window size.
 
 ### "No public RSA key builds found"
 

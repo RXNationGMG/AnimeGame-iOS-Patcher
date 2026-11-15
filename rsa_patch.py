@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gipatch as G                                          # noqa: E402
 import pipeline                                              # noqa: E402
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 RULE = "=" * 62
 
 # What each mode does, in plain words.
@@ -157,6 +157,8 @@ def print_summary(res, mode):
     print("  File   : %s" % res["output"])
     print("  Size   : %s" % pipeline.human_bytes(res["size"]))
     print("  SHA256 : %s" % res["sha256"])
+    if res.get("bundle_id"):
+        print("  Bundle : %s" % res["bundle_id"])
     print()
     print("  What now?")
     print("    1) Install that IPA on your iPhone with KSign (or Sideloadly).")
@@ -181,6 +183,9 @@ def main(argv=None):
                     help="1/standalone = always private, 2/toggle = panel")
     ap.add_argument("-o", "--output", help="where to write the patched IPA")
     ap.add_argument("--key-file", help="XML <RSAKeyValue> of another server")
+    ap.add_argument("--bundle-id", default=pipeline.DEFAULT_BUNDLE_ID,
+                    help="CFBundleIdentifier for the patched app "
+                         "(default: %(default)s; empty keeps the original)")
     ap.add_argument("--report-only", action="store_true",
                     help="only analyse, write nothing")
     ap.add_argument("--no-sign", action="store_true",
@@ -224,6 +229,7 @@ def main(argv=None):
     print()
     print("  File : %s" % src)
     print("  Mode : %s" % MODE_TEXT[mode])
+    print("  Bundle: %s" % (args.bundle_id or "(keep the original)"))
     print("  Out  : %s" % out)
 
     if os.path.exists(out) and not args.report_only:
@@ -255,7 +261,8 @@ def main(argv=None):
         res = pipeline.run(mode, src, out, args.key_file,
                            report_only=args.report_only,
                            sign=not args.no_sign, ldid=args.ldid,
-                           overwrite=True, verbose=args.verbose)
+                           overwrite=True, verbose=args.verbose,
+                           bundle_id=args.bundle_id)
     except G.PatchError as exc:
         explain_error(exc)
         return 2
