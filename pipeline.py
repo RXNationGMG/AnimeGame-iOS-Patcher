@@ -32,6 +32,16 @@ DESCRIPTION = {
     "toggle": "choose private or official from a pre-game panel",
 }
 
+# Packaging artefacts that some repacks carry but iOS never reads: Apple
+# Archive Utility metadata and the decrypt.day drop marker.  Dropping them
+# keeps the output in the same layout as a store-issued IPA, which sideloading
+# tools are known to accept.
+NOISE_ENTRIES = ("META-INF/", "Payload/decrypt.day")
+
+
+def packaging_noise(name):
+    return name == "Payload/decrypt.day" or name.startswith("META-INF/")
+
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -181,16 +191,20 @@ def run(mode, src, out=None, key_file=None, report_only=False, sign=True,
         echo("")
         echo("Packing ...")
         try:
-            secs = G.repack(src, out, ipa.main_entry, patched)
+            secs = G.repack(src, out, ipa.main_entry, patched,
+                            skip=packaging_noise)
         except BaseException:
             _discard(out)
             raise
         echo("  packed      : %.1f s" % secs)
+        if G.strip_zip64(out):
+            echo("  layout      : plain 32-bit zip (ZIP64 records removed)")
 
         echo("")
         echo("Verifying ...")
         try:
-            if not G.verify_repack(src, out, ipa.main_entry, patched):
+            if not G.verify_repack(src, out, ipa.main_entry, patched,
+                                    skip=packaging_noise):
                 raise G.PatchError("the repacked IPA did not verify")
             with zipfile.ZipFile(out) as z:
                 written = z.read(ipa.main_entry)

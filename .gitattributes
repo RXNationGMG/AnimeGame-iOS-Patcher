@@ -1,0 +1,13 @@
+# Normalise text files in the repository
+* text=auto eol=lf
+
+# Windows launchers must keep CRLF or cmd.exe can mis-parse them
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binaries - never touch
+*.exe binary
+*.ipa binary
+*.ipk binary
+*.zip binary
+*.bin binary

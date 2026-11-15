@@ -139,6 +139,16 @@ Only the app's main executable is replaced. Every other archive entry is copied
 through byte for byte with the original entry order, and the result is verified:
 entry list, CRCs, and the patched bytes are re-read from the written IPA.
 
+Two packaging tweaks are applied on purpose, because some on-device signing
+tools refuse the raw archives they come from:
+
+* packaging-only entries are dropped — Apple Archive Utility metadata
+  (`META-INF/…`) and `Payload/decrypt.day` markers, neither of which iOS reads;
+* the archive is rewritten without ZIP64 records (plain 32-bit zip), since the
+  data fits and on-device extractors are not always compiled with ZIP64 support.
+
+The output therefore has the same layout as a store-issued IPA.
+
 ---
 
 ## Troubleshooting
@@ -187,8 +197,8 @@ Details: [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md).
 
 | Version | Status |
 |---|---|
-| 7.1.0 (1242) | Full build; device-confirmed. |
-| 7.2.0 | Discovery, standalone build and per-site stub emulation verified. |
+| 7.1.0 (1242) | Full build; both modes device-confirmed. |
+| 7.2.0 | Full build; both modes device-confirmed. |
 
 The scripts refuse binaries using **chained fixups**
 (`LC_DYLD_CHAINED_FIXUPS`) or relative ObjC method lists. All 7.x builds use the

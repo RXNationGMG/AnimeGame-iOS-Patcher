@@ -952,14 +952,23 @@ def adhoc_sign(blob, ldid=None, ident="GenshinImpact"):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def repack(src, dst, main_entry, main_blob, progress=True):
+def repack(src, dst, main_entry, main_blob, progress=True, skip=None):
+    """Rewrite the IPA with the patched main binary.
+
+    `skip(name)` may drop packaging-only entries (Apple zip metadata, the
+    decrypt.day marker).  Entry order is otherwise preserved exactly.
+    """
     t0 = time.time()
+    dropped = []
     with zipfile.ZipFile(src) as zin:
         infos = zin.infolist()
         with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED,
                              compresslevel=6, allowZip64=True) as zout:
             replaced = False
             for n, info in enumerate(infos, 1):
+                if skip and skip(info.filename):
+                    dropped.append(info.filename)
+                    continue
                 zi = zipfile.ZipInfo(info.filename, info.date_time)
                 zi.compress_type = info.compress_type
                 zi.external_attr = info.external_attr
@@ -979,13 +988,17 @@ def repack(src, dst, main_entry, main_blob, progress=True):
                     print("  %d/%d  %6.1fs" % (n, len(infos), time.time() - t0))
             if not replaced:
                 raise PatchError("%s not found in the archive" % main_entry)
+    if dropped:
+        print("  dropped     : %d packaging-only entries (%s)"
+              % (len(dropped), ", ".join(dropped[:3])))
     return time.time() - t0
 
 
-def verify_repack(src, dst, main_entry, main_blob):
+def verify_repack(src, dst, main_entry, main_blob, skip=None):
     ok = True
     with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst) as b:
-        if a.namelist() != b.namelist():
+        expect = [n for n in a.namelist() if not (skip and skip(n))]
+        if expect != b.namelist():
             print("  !! entry list changed")
             ok = False
         else:
@@ -1015,6 +1028,109 @@ def verify_repack(src, dst, main_entry, main_blob):
         else:
             print("  zip CRCs valid")
     return ok
+
+
+EOCD_SIG = b"PK\x05\x06"
+ZIP64_EOCD_SIG = b"PK\x06\x06"
+ZIP64_LOC_SIG = b"PK\x06\x07"
+CD_SIG = b"PK\x01\x02"
+ZIP64_EXTRA = 0x0001
+
+
+def strip_zip64(path):
+    """Rewrite the archive without any ZIP64 record.
+
+    Python switches to ZIP64 once a value passes 2 GiB, even though plain
+    32-bit fields would do up to 4 GiB.  Some signing tools only implement the
+    32-bit format, so the tail (central directory + end record) is rewritten
+    with plain fields.  Entry data and local headers are not touched.
+
+    Returns True when the file was changed.
+    """
+    size = os.path.getsize(path)
+    with open(path, "r+b") as f:
+        back = min(size, 70000)
+        f.seek(size - back)
+        tail = f.read()
+        eocd_at = tail.rfind(EOCD_SIG)
+        if eocd_at < 0:
+            raise PatchError("no end-of-central-directory record")
+        (_, disk, cd_disk, n_disk, n_total, cd_size, cd_off,
+         comment_len) = struct.unpack_from("<IHHHHIIH", tail, eocd_at)
+        loc_at = tail.rfind(ZIP64_LOC_SIG, 0, eocd_at)
+        if loc_at < 0:
+            return False                      # already a plain 32-bit zip
+        _, _, z64_off, _ = struct.unpack_from("<IIQI", tail, loc_at)
+        f.seek(z64_off)
+        z64 = f.read(56)
+        if z64[:4] != ZIP64_EOCD_SIG:
+            raise PatchError("bad ZIP64 end record")
+        (_, _, _, _, _, _, z_n_disk, z_n_total, z_cd_size,
+         z_cd_off) = struct.unpack("<IQHHIIQQQQ", z64)
+
+        f.seek(z_cd_off)
+        cd = f.read(z_cd_size)
+        if len(cd) != z_cd_size:
+            raise PatchError("truncated central directory")
+
+        out = bytearray()
+        pos = 0
+        count = 0
+        while pos < len(cd):
+            if cd[pos:pos + 4] != CD_SIG:
+                raise PatchError("bad central directory entry at %d" % pos)
+            (_, vmade, vneed, flags, method, tm, dt, crc, csize, usize,
+             nlen, elen, clen, dstart, iattr, eattr, off32) = \
+                struct.unpack_from("<IHHHHHHIIIHHHHHII", cd, pos)
+            name = cd[pos + 46:pos + 46 + nlen]
+            extra = cd[pos + 46 + nlen:pos + 46 + nlen + elen]
+            comment = cd[pos + 46 + nlen + elen:pos + 46 + nlen + elen + clen]
+            vals = [usize, csize, off32]
+            new_extra = bytearray()
+            q = 0
+            while q + 4 <= len(extra):
+                eid, esz = struct.unpack_from("<HH", extra, q)
+                data = extra[q + 4:q + 4 + esz]
+                if eid == ZIP64_EXTRA:
+                    keep = bytearray()
+                    at = 0
+                    for k in range(3):
+                        if vals[k] == 0xFFFFFFFF:
+                            if at + 8 > len(data):
+                                raise PatchError("truncated ZIP64 extra field")
+                            vals[k] = struct.unpack_from("<Q", data, at)[0]
+                            at += 8
+                    keep += data[at:]            # e.g. disk start
+                    if keep:
+                        new_extra += struct.pack("<HH", eid, len(keep)) + keep
+                else:
+                    new_extra += struct.pack("<HH", eid, esz) + data
+                q += 4 + esz
+            for v in vals:
+                if v > 0xFFFFFFFE:
+                    raise PatchError("archive is too large for a 32-bit zip")
+            if method in (0, 8) and vneed > 20:
+                vneed = 20               # store/deflate need no ZIP64 version
+            out += struct.pack("<IHHHHHHIIIHHHHHII", 0x02014B50, vmade, vneed,
+                               flags, method, tm, dt, crc, vals[1], vals[0],
+                               nlen, len(new_extra), clen, dstart, iattr,
+                               eattr, vals[2])
+            out += name + new_extra + comment
+            pos += 46 + nlen + elen + clen
+            count += 1
+
+        if count != z_n_total:
+            raise PatchError("central directory has %d entries, expected %d"
+                             % (count, z_n_total))
+        if count >= 0xFFFF or z_cd_off + len(out) > 0xFFFFFFFE:
+            raise PatchError("archive needs ZIP64")
+        f.seek(z_cd_off)
+        f.write(out)
+        new_eocd = z_cd_off + len(out)
+        f.write(struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, z_n_disk or 0,
+                            count, len(out), z_cd_off, 0))
+        f.truncate(new_eocd + 22)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1171,6 +1287,69 @@ def patch_standalone(main, key_text, report=None):
     return bytes(data), rep
 
 
+_ASM_ADRP = re.compile(r"adrp (x\d+), (0x[0-9a-fA-F]+)$")
+_ASM_LDR = re.compile(r"ldr (x\d+), \[(x\d+), #(0x[0-9a-fA-F]+)\]$")
+
+
+def _panel_slots(asm):
+    """Every `adrp x9 / ldr x9, [x9, #off]` pair -> absolute slot address."""
+    out = []
+    pages = {}
+    for line in asm.splitlines():
+        line = line.strip()
+        m = _ASM_ADRP.match(line)
+        if m:
+            pages[m.group(1)] = int(m.group(2), 16)
+            continue
+        m = _ASM_LDR.match(line)
+        if m and m.group(1) == m.group(2) and m.group(2) in pages:
+            out.append(pages[m.group(2)] + int(m.group(3), 16))
+    return out
+
+
+def _guard_panel(panel, sel, scratch):
+    """Refuse to emit a panel that would crash at launch.
+
+    Two invariants, both learned from device crashes:
+
+    * Selectors must come from the exact `__objc_selrefs` slot.  Unity also has
+      selectors called `action` and `present`, and calling those instead of
+      `actionWithTitle:style:handler:` / `presentViewController:animated:
+      completion:` dies with `unrecognized selector`.
+    * Panel state and the key stubs must address the same scratch block.  The
+      panel only emits `adrp x22, page`, so an unaligned block needs the
+      matching `add x22, x22, #low`.
+    """
+    asm = panel["asm"]
+
+    slots = set(_panel_slots(asm))
+    for name in ("action", "present"):
+        bad = sel.get(name)
+        if bad is not None and bad in slots:
+            raise PatchError(
+                "panel loads selector %r (%#x) instead of the aliased one"
+                % (name, bad))
+
+    lines = [ln.strip() for ln in asm.splitlines()]
+    low = scratch & 0xFFF
+    page_want = scratch & ~0xFFF
+    want = "add x22, x22, #0x%x" % low if low else None
+    for i, line in enumerate(lines):
+        if not line.startswith("adrp x22, "):
+            continue
+        page = int(line.split(",")[1], 16)
+        if page != page_want:
+            raise PatchError("panel points x22 at %#x, not the scratch page %#x"
+                             % (page, page_want))
+        if want is None:
+            continue
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        if nxt != want:
+            raise PatchError(
+                "panel scratch page %#x is used without rebasing onto %#x"
+                % (page, scratch))
+
+
 def patch_toggle(main, key_text, report=None):
     m = MachO(main)
     p = plan(m, key_text, want_toggle=True)
@@ -1199,6 +1378,7 @@ def patch_toggle(main, key_text, report=None):
         raise PatchError("no free __TEXT space for the panel")
 
     code_vm, cave_run, panel, where = cave
+    _guard_panel(panel, p["sel"], p["scratch"])
     if where == "same":
         new_vm = (code_vm + len(panel["blob"]) + 7) & ~7
     else:

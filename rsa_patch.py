@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gipatch as G                                          # noqa: E402
 import pipeline                                              # noqa: E402
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 RULE = "=" * 62
 
 # What each mode does, in plain words.

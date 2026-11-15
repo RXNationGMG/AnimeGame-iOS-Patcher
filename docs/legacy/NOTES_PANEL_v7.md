@@ -190,7 +190,7 @@ every build starts from it, so builds are reproducible.
 
 ## 7. Signing / sideload
 
-Sign the final IPA with the paid certificate (Team `DZNQ8CR9C8`) in KSign.
+Sign the final IPA with your own developer certificate in KSign.
 Runtime `__TEXT` patching is impossible under a distribution/Ad Hoc signature,
 which is why the key blob and the code live in `__TEXT` as *static* content
 signed with the rest of the binary, and only the `__DATA` IMP is rewritten.

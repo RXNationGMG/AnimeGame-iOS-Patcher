@@ -30,6 +30,16 @@
 | `ldid failed` / `ldid grew the binary` | the bundled signer could not run | re-run with `--no-sign`; KSign signs the IPA anyway |
 | `output already exists` | the target file is there | delete/rename it, or pass `-o other.ipa` |
 | `repacked IPA did not verify` | the archive was modified while being read | close tools touching the IPA, retry |
+| Signing app says it cannot extract the IPA | the source archive carried `META-INF/` / `decrypt.day` metadata, or ZIP64 records | builds from this version drop those; if it still happens, check free space on the iPhone |
+| Installs, shows a white screen, then closes | the panel resolved a selector the app does not implement (typically `action` / `present`, which exist but are not `UIAlertAction`/`UIViewController` methods), or wrote its state outside the reserved scratch block | builds from this version resolve selectors through the exact alias table and use the scratch base; rebuild and reinstall |
+
+### "Installs, then the app closes before the panel"
+
+A crash before the alert appears means the panel called `objc_msgSend` with a
+selector that exists in Unity but is not the method the panel wanted. The
+panel now maps short names through `SEL_ALIASES` and refuses to resolve `action`
+or `present` to those lookalike slots. If a future game version triggers this
+again, run `--report-only -v` and check the selector list it prints.
 
 ### "No public RSA key builds found"
 

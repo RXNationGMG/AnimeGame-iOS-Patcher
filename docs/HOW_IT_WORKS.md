@@ -87,8 +87,10 @@ register the stub clobbers is one the original run did not need afterwards.
 `__TEXT` padding (`_space_for`), and `_load_panel` resolves the GOT slots the
 code calls through: `objc_msgSend`, `objc_getClass`, `dlsym` and
 `__NSConcreteGlobalBlock`. Selectors are loaded from `__objc_selrefs` instead
-of from string literals, so no `__cstring` space is needed; the generator
-accepts both `foo:` and `foo` spellings (`SEL_ALIASES`).
+of from string literals, so no `__cstring` space is needed. Every short name
+goes through the exact-match `SEL_ALIASES` table: Unity itself has selectors
+called `action` and `present`, so a name that is merely present in the binary
+would pick the wrong slot and crash with `unrecognized selector`.
 
 The panel shows a `UIAlertController` with the two choices, blocks in short
 run-loop slices until a button is pressed, and falls back to the stored mode
@@ -110,9 +112,12 @@ built.
 
 Before anything is written:
 
-* every rewritten/stubbed site is re-emulated;
-* the toggle stubs are run under Unicorn: slot 0 must yield your key, slot 1 the
-  shipped key (7.1 and 7.2 both checked);
+* every rewritten key build is re-emulated and must produce the requested key;
+* the panel may only use selector slots that hold the *exact* selector it calls
+  — `action` and `present` also exist as real selectors in Unity, so a short
+  name is resolved through `SEL_ALIASES` and never guessed from the binary;
+* the panel and the key stubs must address the same scratch block (the stubs
+  read the slot the panel writes);
 * the standalone change set must match the expected instruction lanes exactly.
 
 After writing:
@@ -137,6 +142,8 @@ If any check fails the output file is deleted.
 | `cryptid != 0` | encrypted text cannot be disassembled meaningfully |
 | no free `__TEXT` space | the panel code would overwrite live code |
 | missing selectors | the panel would call a selector the app never registers |
+| panel loads a lookalike selector (`action`, `present`) | those exist in Unity but are not the `UIAlertAction` / `UIViewController` methods, so the alert would crash with `unrecognized selector` |
+| panel state is not addressed from the scratch block | an unaligned scratch base without the matching `add` writes over live `__DATA` |
 
 Each of these raises a message explaining what happened instead of producing an
 IPA that crashes on device.
@@ -144,7 +151,6 @@ IPA that crashes on device.
 ---
 
 ## 7. Signing
-
 `ldid -S` replaces the shipped (App Store) code signature of the main binary
 with an ad-hoc one so dyld accepts the modified binary; KSign/Sideloadly then
 re-sign the whole IPA with a real certificate. This is why the main binary
@@ -158,7 +164,23 @@ KSign replaces the signature anyway.
 
 ---
 
-## 8. Performance
+## 8. Archive packaging
+
+Two things are normalised while repacking so that on-device signing tools
+accept the result:
+
+* **Packaging-only entries are dropped.** Some IPA sources carry Apple Archive
+  Utility metadata (`META-INF/com.apple.ZipMetadata.plist`,
+  `META-INF/com.apple.FixedZipMetadata.bin`) and service markers such as
+  `Payload/decrypt.day`. iOS never reads any of them, and at least one popular
+  on-device signer fails to extract archives that contain them.
+* **No ZIP64.** Python switches to ZIP64 once offsets pass 2 GiB, even though
+  plain 32-bit fields work up to 4 GiB. `strip_zip64()` rewrites the central
+  directory and end record with 32-bit values (and removes the ZIP64 extra
+  fields), so the archive looks exactly like a store-issued IPA. If a future
+  archive really needed ZIP64 the function refuses instead of corrupting it.
+
+## 9. Performance
 
 Patching itself takes about 40 seconds on a 3.2 GB IPA. Repacking dominates:
 every entry is recompressed, roughly 5 minutes for 842 entries on a modern SSD.

@@ -38,10 +38,11 @@ LABEL_PRIVATE = "Grasscutter (private)"
 MODE_KEY = "rsapatch.mode"
 RUNMODE = "kCFRunLoopDefaultMode"
 
-# Friendly short names used by the payload -> real selector text in the binary.
-# `__objc_selrefs` stores the exact selector string, so both spellings are
-# accepted: a short name resolves through this table, anything else is used
-# verbatim.
+# Friendly short names used by the payload -> exact selector text in the binary.
+# Every name the payload uses is listed here, including the ones whose short
+# form is already a real selector.  That matters: `action` and `present` exist
+# as selectors in Unity, so guessing by name returns the wrong `selref` and the
+# game dies with "unrecognized selector" when the panel builds its alert.
 SEL_ALIASES = {
     "alert": "alertControllerWithTitle:message:preferredStyle:",
     "action": "actionWithTitle:style:handler:",
@@ -56,16 +57,35 @@ SEL_ALIASES = {
     "setHidden": "setHidden:",
     "addAction": "addAction:",
     "dateWithTimeIntervalSinceNow": "dateWithTimeIntervalSinceNow:",
+    "standardUserDefaults": "standardUserDefaults",
+    "alloc": "alloc",
+    "init": "init",
+    "makeKeyAndVisible": "makeKeyAndVisible",
+    "mainScreen": "mainScreen",
+    "bounds": "bounds",
+    "synchronize": "synchronize",
+    "sharedApplication": "sharedApplication",
+    "connectedScenes": "connectedScenes",
+    "anyObject": "anyObject",
+    "currentRunLoop": "currentRunLoop",
+    "runMode:beforeDate:": "runMode:beforeDate:",
+    "date": "date",
+    "timeIntervalSinceReferenceDate": "timeIntervalSinceReferenceDate",
 }
 
 
 def resolve_sel(sel, name):
-    """Map a payload selector name to the key used by `selrefs`."""
+    """Map a payload selector name to the exact key used by `selrefs`.
+
+    The alias table always wins, so a short name that also happens to be a
+    different real selector (`action`, `present`) can never resolve to it.
+    Full selector names are still accepted verbatim.
+    """
+    if name in SEL_ALIASES:
+        alias = SEL_ALIASES[name]
+        return alias if alias in sel else None
     if name in sel:
         return name
-    alias = SEL_ALIASES.get(name)
-    if alias and alias in sel:
-        return alias
     return None
 
 SCRATCH_SIZE = 0x100
@@ -155,6 +175,20 @@ def build_panel(p):
         assert off % 8 == 0 and off <= 0xFF8, "slot %#x not addressable in one page" % addr
         return ["adrp x9, 0x%x" % page, "ldr %s, [x9, #0x%x]" % (reg, off)]
 
+    scratch_low = scratch & 0xFFF
+
+    def load_scratch(reg="x22"):
+        """Point `reg` at the scratch block itself, not at its page base.
+
+        The scratch block is only 16-byte aligned, so the low 12 bits have to
+        be added back; otherwise every state slot lands up to 0xFFF bytes
+        before the reserved gap and writes over live __DATA.
+        """
+        out = ["adrp %s, 0x%x" % (reg, scratch & ~0xFFF)]
+        if scratch_low:
+            out.append("add %s, %s, #0x%x" % (reg, reg, scratch_low))
+        return out
+
     # ======================= the hook ====================================
     a.label("hook_start")
     a("sub sp, sp, #0x70")
@@ -187,7 +221,7 @@ def build_panel(p):
     a("stp x25, x30, [sp, #0x30]")
     a.many(ldslot(got_msg, "x19"))
     a.many(ldslot(got_cls, "x20"))
-    a("adrp x22, 0x%x" % (scratch & ~0xFFF))
+    a.many(load_scratch())
     a("mov x21, #0")
     a("mov w23, #%d" % MODE_PRIVATE)
     a("str xzr, [x22, #0x%x]" % S_KEYOBJ)
@@ -245,7 +279,7 @@ def build_panel(p):
     a("stp x23, x24, [sp, #0x20]")
     a("stp x25, x26, [sp, #0x30]")
     a("stp x27, x30, [sp, #0x40]")
-    a("adrp x22, 0x%x" % (scratch & ~0xFFF))
+    a.many(load_scratch())
     a("ldrb w9, [x22, #0x%x]" % S_SHOWN)
     a("cbnz w9, .Lp_ret")
     a("mov w9, #1")
@@ -306,13 +340,15 @@ def build_panel(p):
     a("mov x1, x9")
     a("blr x19")
     a("cbz x0, .Lp_bail")
+    # CGRect is four doubles: arm64 returns it in d0-d3 (HFA), so the frame is
+    # written both ways. The x8 buffer covers a callee that uses the indirect
+    # result convention; the d0-d3 stores are the real HFA path.
+    a("add x8, x22, #0x%x" % S_FRAME)
     a.many(ldsel("bounds"))
     a("mov x1, x9")
     a("blr x19")
-    a("str d0, [x22, #0x%x]" % (S_FRAME + 0))
-    a("str d1, [x22, #0x%x]" % (S_FRAME + 8))
-    a("str d2, [x22, #0x%x]" % (S_FRAME + 16))
-    a("str d3, [x22, #0x%x]" % (S_FRAME + 24))
+    for i in range(4):
+        a("str d%d, [x22, #0x%x]" % (i, S_FRAME + 8 * i))
 
     a.adr("x0", "cstr_UIWindow")
     a("blr x20")
@@ -559,7 +595,7 @@ def build_panel(p):
     a("stp x21, x22, [sp, #0x10]")
     a("stp x23, x24, [sp, #0x20]")
     a("stp x29, x30, [sp, #0x30]")
-    a("adrp x22, 0x%x" % (scratch & ~0xFFF))
+    a.many(load_scratch())
     a("str w0, [x22, #0x%x]" % S_CHOICE)
     a("ldr w9, [x22, #0x%x]" % S_MODE)
     a("cmp w0, w9")

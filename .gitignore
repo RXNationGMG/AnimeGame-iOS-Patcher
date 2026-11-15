@@ -14,8 +14,27 @@ builds/*
 *.ipk
 *.zip
 
+# Unpacked game data / comparison dumps
+Payload/
+_cmp/
+*.bin
+*.dylib
+
+# Signing material - stays on your machine
+*.p12
+*.pfx
+*.cer
+*.crt
+*.pem
+*.key
+*.mobileprovision
+*.mobileconfig
+certs/
+provisioning/
+
 # Local junk
 *.log
+*.status
 dist/
 .DS_Store
 Thumbs.db
